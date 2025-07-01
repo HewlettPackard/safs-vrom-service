@@ -1,0 +1,16 @@
+[Unit]
+Description=Enable Host Boot and VROM
+Wants=phosphor-ipmi-host.service
+After=phosphor-ipmi-host.service
+Before=xyz.openbmc_project.Chassis.Control.Power@0.service
+StartLimitIntervalSec=200
+StartLimitBurst=3
+
+[Service]
+ExecStart=/usr/bin/safs-vrom
+Type=oneshot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
