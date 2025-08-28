@@ -64,8 +64,9 @@ end:
 
 bool enable_and_copy_vrom_content()
 {
-    const char *host_mtd_path = "/dev/mtd/host-prime";
-    const char *vrom_mtd_path = "/dev/mtd/vrom-prime";
+    const char *host_mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
+    const char *vrom_mtd_path = MTD_BY_NAME_VROM_PRIME_PATH;
+
     char buf[BUF_SIZE_512B];
     char str[20];
     char *tmp;
@@ -177,7 +178,7 @@ bool enable_and_copy_vrom_content()
 int main()
 {
     bool rc;
-    const char *mtd_path = "/dev/mtd/host-prime";
+    const char *mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
     char flash_descriptor_data[sizeof(flash_descriptor)];
     flash_descriptor *desc_data = NULL;
     uint32_t reg_base = 0;
