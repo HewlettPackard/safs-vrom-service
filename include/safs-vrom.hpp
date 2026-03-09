@@ -38,6 +38,13 @@
 #define MAX_PROTECTED_RANGE_REGS                 8
 #define FCCFGVALID                               16
 #define BUF_SIZE_512B                            512
+#define ALL_REGS                                 -1
+
+#define FLASH_DESC_SIGNATURE                     0x0FF0A55A
+
+#define AMD_SIGNATURE_OFFSET                     0x03000000
+#define AMD_SIGNATURE                            "COMPAQ"
+#define AMD_SIGNATURE_LEN                        6
 
 // structure describing Flash descriptor content
 #pragma pack(1)
