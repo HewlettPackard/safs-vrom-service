@@ -438,8 +438,7 @@ bool configure_safs_for_amd()
 bool is_amd_board()
 {
     const char *board = getenv("BOARD");
-    if (board == NULL)
-    {
+    if (board == NULL) {
         lg2::warning("BOARD environment variable is not set, defaulting to Intel flow");
         return false;
     }
@@ -453,37 +452,31 @@ int main()
 
     // baseline sequence sync host SPI to VROM and enable VROM.
     rc = enable_and_copy_vrom_content();
-    if (!rc){
+    if (!rc) {
         lg2::emergency("Error while enabling and copying VROM contents and rc: {ERROR}" , "ERROR" , rc);
         exit(EXIT_FAILURE);
     }
     lg2::info("VROM is enabled");
 
     // Initialize PRR/RAP to deny-all before applying platform-specific policy.
-    if (!set_espifcprr_register(ALL_REGS, 0x0000FFFF))
-    {
+    if (!set_espifcprr_register(ALL_REGS, 0x0000FFFF)) {
         exit(EXIT_FAILURE);
     }
 
-    if (!set_espifcrap0_register(0))
-    {
+    if (!set_espifcrap0_register(0)) {
         exit(EXIT_FAILURE);
     }
 
     // Apply the ported architecture-specific SAFS policy.
-    if (is_amd_board())
-    {
+    if (is_amd_board()) {
         lg2::info("Applying AMD SAFS configuration for BOARD 0x0285");
-        if (!configure_safs_for_amd())
-        {
+        if (!configure_safs_for_amd()) {
             exit(EXIT_FAILURE);
         }
     }
-    else
-    {
+    else {
         lg2::info("Applying Intel SAFS configuration");
-        if (!configure_safs_for_intel())
-        {
+        if (!configure_safs_for_intel()) {
             exit(EXIT_FAILURE);
         }
     }
