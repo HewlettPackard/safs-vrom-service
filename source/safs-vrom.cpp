@@ -83,7 +83,7 @@ bool enable_and_copy_vrom_content()
     char str[20];
     char *tmp;
     uint32_t vrom_offset_hex;
-    int ioctl_error, cur;
+    int ioctl_error;
     uint64_t index = 0;
     mtd_info_t mtd_info_host, mtd_info_vrom;
     size_t rd_count = 0, wr_count = 0, total_rd_cnt = 0;
@@ -91,10 +91,17 @@ bool enable_and_copy_vrom_content()
 
     FILE *fd_host = fopen(host_mtd_path, "rb");
     FILE *fd_vrom = fopen(vrom_mtd_path, "wb");
-    if (fd_host == NULL || fd_vrom == NULL)  {
-        lg2::emergency("unable to open MTD device path");
+    if (fd_host == NULL) {
+        lg2::emergency("unable to open MTD device path {HOST_MTD_PATH}", "HOST_MTD_PATH" , std::string(host_mtd_path));
         return false;
     }
+
+    if (fd_vrom == NULL) {
+        lg2::emergency("unable to open MTD device path {HOST_MTD_PATH}", "HOST_MTD_PATH" , std::string(vrom_mtd_path));
+        fclose(fd_host);
+        return false;
+    }
+
     ioctl_error = ioctl(fd_host->_fileno, MEMGETINFO, &mtd_info_host);
     if (ioctl_error == -1) {
         lg2::emergency("error during ioctl for MEMGETINFO command for mtd path : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
@@ -113,15 +120,14 @@ bool enable_and_copy_vrom_content()
     }
 
     if (mtd_info_host.size == mtd_info_vrom.size) {
-        cur = fseek(fd_host, 0, SEEK_SET);
-        if (cur == -1) {
+        if (fseek(fd_host, 0, SEEK_SET)) {
             lg2::emergency("error during lseek operation from MTD partition : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
             fclose(fd_host);
             fclose(fd_vrom);
             return false;
         }
-        cur = fseek(fd_vrom, 0, SEEK_SET);
-        if (cur == -1) {
+
+        if (fseek(fd_vrom, 0, SEEK_SET)) {
             lg2::emergency("error during lseek operation from MTD partition : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
             fclose(fd_host);
             fclose(fd_vrom);
@@ -172,7 +178,10 @@ bool enable_and_copy_vrom_content()
     sscanf(str+2,"%x",&vrom_offset_hex);
     vrom_offset_hex = vrom_offset_hex | (1 << 3);
     sprintf(str,"0x%x",vrom_offset_hex);
-    fputs(str,fp);
+    // added this fseek in as without it the behaviour is undefined and we were lucky without it.
+    if (fseek(fp, 0, SEEK_SET) == 0) {
+        fputs(str,fp);
+    }
     fclose(fp);
     return true;
 }
@@ -201,7 +210,7 @@ bool set_espifcprr_register(int8_t regNo, uint32_t value)
                                                                FLASH_ESPIFCPRR_REGION_6_SYSFS_PATH,
                                                                FLASH_ESPIFCPRR_REGION_7_SYSFS_PATH};
 
-    if (regNo <= ALL_REGS) { //Set all registers with value
+    if (regNo == ALL_REGS) { //Set all registers with value
         init_idx = 0;
         max_idx = MAX_PROTECTED_RANGE_REGS;
 
@@ -215,7 +224,7 @@ bool set_espifcprr_register(int8_t regNo, uint32_t value)
         max_idx = init_idx + 1;
     }
 
-    // Open and write the approprite region file
+    // Open and write the appropriate region file
     for (uint8_t reg_idx = init_idx; reg_idx < max_idx; reg_idx++) {
         fp = fopen(prr_sysfs_address[reg_idx], "w");
 
@@ -285,7 +294,6 @@ bool configure_safs_for_intel()
     uint32_t rap_data = 0;
     uint8_t used_reg_idx = 0;
     FILE *fd_host = NULL;
-    int cur = 0;
     size_t rd_count = 0;
 
     // Parse combo flash to find the base address and limit of different regions and program flash channel region protection registers
@@ -301,8 +309,7 @@ bool configure_safs_for_intel()
     memset(flash_descriptor_data,0x00,sizeof(flash_descriptor_data));
 
     do {
-        cur = fseek(fd_host, 0, SEEK_SET);
-        if (cur == -1) {
+        if (fseek(fd_host, 0, SEEK_SET)) {
             lg2::emergency("error during lseek operation from MTD partition : {MTD_PATH} and errno : {ERRNO}" , "MTD_PATH" , std::string(mtd_path), "ERRNO" , errno);
             fclose(fd_host);
             return false;

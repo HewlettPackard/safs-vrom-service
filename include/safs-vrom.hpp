@@ -27,7 +27,7 @@
 #define FLASH_ESPIGCFG_SYSFS_PATH                "/sys/class/soc/kw_reg_list/espigcfg"
 
 #define MTD_BY_NAME_HOST_PRIME_PATH              "/dev/mtd/by-name/host-prime"
-#define MTD_BY_NAME_VROM_PRIME_PATH              "/dev/mtd/by-name/vrom-prime";
+#define MTD_BY_NAME_VROM_PRIME_PATH              "/dev/mtd/by-name/vrom-prime"
 
 #define HOSTCMD_PATH                             "/sys/class/soc/kw_reg_list/hostcmd"
 #define HOSTBOOT_EN_PATH                         "/sys/class/soc/fn2/fn2_host_boot_en"
