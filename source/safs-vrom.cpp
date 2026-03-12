@@ -51,7 +51,15 @@ int update_sysfs_reg32(const char *path, uint32_t val, bool overwrite)
     sprintf(rwstr,"0x%x", (prev_val | val));
     lg2::info("Updating {PATH} from {PREV} to {NEW}",
               "PATH" , std::string(path), "PREV" , lg2::hex, prev_val, "NEW", std::string(rwstr));
-    fputs(rwstr,fp);
+    if (fseek(fp, 0, SEEK_SET) == 0) {
+        if (fputs(rwstr,fp) <= 0) {
+            lg2::emergency("unable to write to SYSFS path {PATH}", "PATH" , std::string(path));
+            goto end;
+        }
+    } else {
+        lg2::emergency("unable to SEEK_SET to SYSFS path {PATH}", "PATH" , std::string(path));
+        goto end;
+    }
     fflush(fp);
     rv = 0;
 
@@ -88,6 +96,7 @@ bool enable_and_copy_vrom_content()
     mtd_info_t mtd_info_host, mtd_info_vrom;
     size_t rd_count = 0, wr_count = 0, total_rd_cnt = 0;
     FILE *fp;
+    bool rv=false;
 
     FILE *fd_host = fopen(host_mtd_path, "rb");
     FILE *fd_vrom = fopen(vrom_mtd_path, "wb");
@@ -180,10 +189,16 @@ bool enable_and_copy_vrom_content()
     sprintf(str,"0x%x",vrom_offset_hex);
     // added this fseek in as without it the behaviour is undefined and we were lucky without it.
     if (fseek(fp, 0, SEEK_SET) == 0) {
-        fputs(str,fp);
+        if (fputs(str,fp) <= 0) {
+            lg2::emergency("unable to write to VROM SYSFS path  {VROM_PATH} , VROM may be disabled" , "VROM_PATH" , std::string(VROM_SYSFS_PATH));
+        } else {
+            rv = true;
+        }
+    } else {
+        lg2::emergency("unable to SEEK_SET to VROM SYSFS path  {VROM_PATH} , VROM may be disabled" , "VROM_PATH" , std::string(VROM_SYSFS_PATH));
     }
     fclose(fp);
-    return true;
+    return rv;
 }
 
 /*
