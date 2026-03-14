@@ -96,7 +96,7 @@ bool enable_and_copy_vrom_content()
     mtd_info_t mtd_info_host, mtd_info_vrom;
     size_t rd_count = 0, wr_count = 0, total_rd_cnt = 0;
     FILE *fp;
-    bool rv=false;
+    bool rv=false, failure=false;
 
     FILE *fd_host = fopen(host_mtd_path, "rb");
     FILE *fd_vrom = fopen(vrom_mtd_path, "wb");
@@ -114,33 +114,29 @@ bool enable_and_copy_vrom_content()
     ioctl_error = ioctl(fd_host->_fileno, MEMGETINFO, &mtd_info_host);
     if (ioctl_error == -1) {
         lg2::emergency("error during ioctl for MEMGETINFO command for mtd path : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
+        goto cleanup;
     }
 
     ioctl_error = ioctl(fd_vrom->_fileno, MEMGETINFO, &mtd_info_vrom);
 
     if (ioctl_error == -1) {
         lg2::emergency("error during ioctl for MEMGETINFO command for mtd path : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
+        goto cleanup;
     }
 
     if (mtd_info_host.size == mtd_info_vrom.size) {
         if (fseek(fd_host, 0, SEEK_SET)) {
             lg2::emergency("error during lseek operation from MTD partition : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-            fclose(fd_host);
-            fclose(fd_vrom);
-            return false;
+            failure = true;
+            goto cleanup;
         }
 
         if (fseek(fd_vrom, 0, SEEK_SET)) {
             lg2::emergency("error during lseek operation from MTD partition : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-            fclose(fd_host);
-            fclose(fd_vrom);
-            return false;
+            failure = true;
+            goto cleanup;
         }
         // copy BIOS Content from SPI to VROM
         for (index = 0;index < mtd_info_host.size; index += total_rd_cnt) {
@@ -148,30 +144,32 @@ bool enable_and_copy_vrom_content()
             total_rd_cnt = rd_count;
             if(rd_count <= 0) {
                 lg2::emergency("error during reading BIOS content from MTD partition : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-                fclose(fd_host);
-                fclose(fd_vrom);
-                return false;
+                failure = true;
+                goto cleanup;
             }
             wr_count = 0;
             do {
                 wr_count = fwrite(buf + wr_count, 1, rd_count, fd_vrom);
                 if (wr_count <= 0) {
                     lg2::emergency("error during writing BIOS content to MTD partition : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-                    fclose(fd_host);
-                    fclose(fd_vrom);
-                    return false;
+                    failure = true;
+                    goto cleanup;
                 }
                 rd_count = rd_count - wr_count;
             } while(rd_count > 0);
         }
     } else {
         lg2::emergency("HOST and VROM MTD partition size mismatch, Host MTD size : {HOST_MTD_SIZE} and VROM MTD Size : {VROM_MTD_SIZE}" , "HOST_MTD_SIZE" , mtd_info_host.size ,"VROM_MTD_SIZE" , mtd_info_vrom.size);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
     }
+
+cleanup:
     fclose(fd_host);
     fclose(fd_vrom);
+    if (failure) {
+        // we had a failure copying the image so return and don't enable VROM support.
+        return false;
+    }
 
     // enable VROM Support
     fp = fopen(VROM_SYSFS_PATH,"r+");
