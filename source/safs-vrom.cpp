@@ -51,7 +51,15 @@ int update_sysfs_reg32(const char *path, uint32_t val, bool overwrite)
     sprintf(rwstr,"0x%x", (prev_val | val));
     lg2::info("Updating {PATH} from {PREV} to {NEW}",
               "PATH" , std::string(path), "PREV" , lg2::hex, prev_val, "NEW", std::string(rwstr));
-    fputs(rwstr,fp);
+    if (fseek(fp, 0, SEEK_SET) == 0) {
+        if (fputs(rwstr,fp) <= 0) {
+            lg2::emergency("unable to write to SYSFS path {PATH}", "PATH" , std::string(path));
+            goto end;
+        }
+    } else {
+        lg2::emergency("unable to SEEK_SET to SYSFS path {PATH}", "PATH" , std::string(path));
+        goto end;
+    }
     fflush(fp);
     rv = 0;
 
@@ -62,6 +70,18 @@ end:
 }
 
 
+/*
+ * safs-vrom-service.
+ *
+ * This function performs the VROM synchronization step used before SAFS
+ * protection is enabled:
+ *   1) Copy host SPI contents to VROM SPI.
+ *   2) Set the VROM enable bit in vromoff.
+ *
+ * Why this matters:
+ *   SAFS expects VROM to mirror host SPI contents so the platform can boot
+ *   and serve reads from the protected flash channel consistently.
+ */
 bool enable_and_copy_vrom_content()
 {
     const char *host_mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
@@ -71,52 +91,54 @@ bool enable_and_copy_vrom_content()
     char str[20];
     char *tmp;
     uint32_t vrom_offset_hex;
-    int ioctl_error, cur;
+    int ioctl_error;
     uint64_t index = 0;
     mtd_info_t mtd_info_host, mtd_info_vrom;
     size_t rd_count = 0, wr_count = 0, total_rd_cnt = 0;
     FILE *fp;
+    bool rv=false, failure=false;
 
     FILE *fd_host = fopen(host_mtd_path, "rb");
     FILE *fd_vrom = fopen(vrom_mtd_path, "wb");
-    if (fd_host == NULL || fd_vrom == NULL)
+    if (fd_host == NULL) {
+        lg2::emergency("unable to open MTD device path {HOST_MTD_PATH}", "HOST_MTD_PATH" , std::string(host_mtd_path));
+        return false;
+    }
+
+    if (fd_vrom == NULL)
     {
-        lg2::emergency("unable to open MTD device path");
+        lg2::emergency("unable to open MTD device path {HOST_MTD_PATH}", "HOST_MTD_PATH" , std::string(vrom_mtd_path));
+        fclose(fd_host);
         return false;
     }
     ioctl_error = ioctl(fd_host->_fileno, MEMGETINFO, &mtd_info_host);
     if (ioctl_error == -1)
     {
         lg2::emergency("error during ioctl for MEMGETINFO command for mtd path : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
+        goto cleanup;
     }
     ioctl_error = ioctl(fd_vrom->_fileno, MEMGETINFO, &mtd_info_vrom);
     if (ioctl_error == -1)
     {
         lg2::emergency("error during ioctl for MEMGETINFO command for mtd path : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
+        goto cleanup;
     }
     if (mtd_info_host.size == mtd_info_vrom.size)
     {
-        cur = fseek(fd_host, 0, SEEK_SET);
-        if (cur == -1)
+        if (fseek(fd_host, 0, SEEK_SET))
         {
             lg2::emergency("error during lseek operation from MTD partition : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-            fclose(fd_host);
-            fclose(fd_vrom);
-            return false;
+            failure = true;
+            goto cleanup;
         }
-        cur = fseek(fd_vrom, 0, SEEK_SET);
-        if (cur == -1)
+
+        if (fseek(fd_vrom, 0, SEEK_SET))
         {
             lg2::emergency("error during lseek operation from MTD partition : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-            fclose(fd_host);
-            fclose(fd_vrom);
-            return false;
+            failure = true;
+            goto cleanup;
         }
         // copy BIOS Content from SPI to VROM
         for (index = 0;index < mtd_info_host.size; index += total_rd_cnt)
@@ -126,9 +148,8 @@ bool enable_and_copy_vrom_content()
             if(rd_count <= 0)
             {
                 lg2::emergency("error during reading BIOS content from MTD partition : {HOST_MTD_PATH} and errno : {ERRNO}" , "HOST_MTD_PATH" , std::string(host_mtd_path) ,"ERRNO" , errno);
-                fclose(fd_host);
-                fclose(fd_vrom);
-                return false;
+                failure = true;
+                goto cleanup;
             }
             wr_count = 0;
             do
@@ -137,9 +158,8 @@ bool enable_and_copy_vrom_content()
                 if (wr_count <= 0)
                 {
                     lg2::emergency("error during writing BIOS content to MTD partition : {VROM_MTD_PATH} and errno : {ERRNO}" , "VROM_MTD_PATH" , std::string(vrom_mtd_path) ,"ERRNO" , errno);
-                    fclose(fd_host);
-                    fclose(fd_vrom);
-                    return false;
+                    failure = true;
+                    goto cleanup;
                 }
                 rd_count = rd_count - wr_count;
             } while(rd_count > 0);
@@ -148,12 +168,16 @@ bool enable_and_copy_vrom_content()
     else
     {
         lg2::emergency("HOST and VROM MTD partition size mismatch, Host MTD size : {HOST_MTD_SIZE} and VROM MTD Size : {VROM_MTD_SIZE}" , "HOST_MTD_SIZE" , mtd_info_host.size ,"VROM_MTD_SIZE" , mtd_info_vrom.size);
-        fclose(fd_host);
-        fclose(fd_vrom);
-        return false;
+        failure = true;
     }
+
+cleanup:
     fclose(fd_host);
     fclose(fd_vrom);
+    if (failure) {
+        // we had a failure copying the image so return and don't enable VROM support.
+        return false;
+    }
 
     // enable VROM Support
     fp = fopen(VROM_SYSFS_PATH,"r+");
@@ -170,26 +194,35 @@ bool enable_and_copy_vrom_content()
     sscanf(str+2,"%x",&vrom_offset_hex);
     vrom_offset_hex = vrom_offset_hex | (1 << 3);
     sprintf(str,"0x%x",vrom_offset_hex);
-    fputs(str,fp);
+    // added this fseek in as without it the behaviour is undefined and we were lucky without it.
+    if (fseek(fp, 0, SEEK_SET) == 0) {
+        if (fputs(str,fp) <= 0) {
+            lg2::emergency("unable to write to VROM SYSFS path  {VROM_PATH} , VROM may be disabled" , "VROM_PATH" , std::string(VROM_SYSFS_PATH));
+        } else {
+            rv = true;
+        }
+    } else {
+        lg2::emergency("unable to SEEK_SET to VROM SYSFS path  {VROM_PATH} , VROM may be disabled" , "VROM_PATH" , std::string(VROM_SYSFS_PATH));
+    }
     fclose(fp);
-    return true;
+    return rv;
 }
 
-int main()
+/*
+ * safs-vrom-service set_espifcprr_register().
+ *
+ * Programs eSPI Flash Channel Protected Range Registers (PRR0..PRR7):
+ *   - regNo == ALL_REGS(-1): initialize all PRRs with the same value.
+ *   - regNo >= 0: program a single PRR index.
+ *
+ * PRRs define which flash address ranges are exposed/allowed through eSPI.
+ */
+bool set_espifcprr_register(int8_t regNo, uint32_t value)
 {
-    bool rc;
-    const char *mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
-    char flash_descriptor_data[sizeof(flash_descriptor)];
-    flash_descriptor *desc_data = NULL;
-    uint32_t reg_base = 0;
-    uint32_t reg_limit = 0;
-    uint32_t prr_data = 0, rap_data = 0;
-    uint8_t  used_reg_idx = 0;
-    uint8_t  reg_idx = 0;
-    FILE     *fd_host, *fp;
-    char     str[20];
-    int cur;
-    size_t rd_count;
+    FILE *fp = NULL;
+    char str[20];
+    uint8_t init_idx = 0;
+    uint8_t max_idx = 0;
     const char *prr_sysfs_address[MAX_PROTECTED_RANGE_REGS] = {FLASH_ESPIFCPRR_REGION_0_SYSFS_PATH,
                                                                FLASH_ESPIFCPRR_REGION_1_SYSFS_PATH,
                                                                FLASH_ESPIFCPRR_REGION_2_SYSFS_PATH,
@@ -199,110 +232,284 @@ int main()
                                                                FLASH_ESPIFCPRR_REGION_6_SYSFS_PATH,
                                                                FLASH_ESPIFCPRR_REGION_7_SYSFS_PATH};
 
-    // find MTD device for HOST and VROM and copy contents from HOST to VROM and enable VROM
-    rc = enable_and_copy_vrom_content();
-    if (rc == false)
-    {
-        lg2::emergency("Error while enabling and copying VROM Contents and rc: {ERROR}", "ERROR", rc);
-        exit(EXIT_FAILURE);
+    if (regNo == ALL_REGS) { //Set all registers with value
+        init_idx = 0;
+        max_idx = MAX_PROTECTED_RANGE_REGS;
+
+    } else {  // Set a single register with value
+        if (regNo >= MAX_PROTECTED_RANGE_REGS) {
+            lg2::emergency("Invalid ESPIFCPRR register index {REGNO}", "REGNO", regNo);
+            return false;
+        }
+
+        init_idx = static_cast<uint8_t>(regNo);
+        max_idx = init_idx + 1;
     }
-    lg2::info("VROM is enabled");
+
+    // Open and write the appropriate region file
+    for (uint8_t reg_idx = init_idx; reg_idx < max_idx; reg_idx++) {
+        fp = fopen(prr_sysfs_address[reg_idx], "w");
+
+    if (fp == NULL) {
+        lg2::emergency("Unable to open ESPIFCPRR SYSFS path {PATH}", "PATH", std::string(prr_sysfs_address[reg_idx]));
+                return false;
+        }
+
+        sprintf(str, "0x%08x", value);
+        fputs(str, fp);
+        fclose(fp);
+    }
+
+    return true;
+}
+
+/*
+ * safs-vrom-service set_espifcrap0_register().
+ *
+ * Programs RAP0 (Range Access Protection register) for flash channel access.
+ * RAP0 controls region/tag access policy and is used together with PRR setup.
+ */
+bool set_espifcrap0_register(uint32_t value)
+{
+    FILE *fp = fopen(FLASH_ESPIFCRAP_REG_0_SYSFS_PATH, "w");
+    char str[20];
+
+    // program e-SPI Flash channel range access protection registers
+    // according to SPI Programming Guide Rev 0p4, Master section is not used and Read\Write acess for each region is Fixed as below
+    // Region 0, 1, 4 and 14 are accessible to CPU (Tag as 0x00 and 0x01) and BIOS (Tag as 0x02 and 0x03)
+    // Currently we are marking all regions as read-only
+    // eSPI flash channel Range Access Protection Register 0
+    // [15:0] - Tag [15:0] enable
+    // [23:16] - Region [7:0] Read Access
+    // [31:24] - Region [7:0] Write Access
+    //
+    if (fp == NULL) {
+        lg2::emergency("Unable to open ESPIFCRAP reg0 SYSFS path {PATH}",
+                       "PATH", std::string(FLASH_ESPIFCRAP_REG_0_SYSFS_PATH));
+        return false;
+    }
+
+    sprintf(str, "0x%08x", value);
+    fputs(str, fp);
+    fclose(fp);
+
+    return true;
+}
+
+/*
+ * configure_safs_for_intel().
+ *
+ * Intel flow is descriptor-driven:
+ *   - Read flash descriptor from host SPI.
+ *   - Validate descriptor signature.
+ *   - For each used descriptor region, compute and program one PRR.
+ *   - Build RAP0 read mask from number of programmed regions.
+ */
+bool configure_safs_for_intel()
+{
+    const char *mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
+    char flash_descriptor_data[sizeof(flash_descriptor)];
+    flash_descriptor *desc_data = NULL;
+    uint32_t reg_base = 0;
+    uint32_t reg_limit = 0;
+    uint32_t prr_data = 0;
+    uint32_t rap_data = 0;
+    uint8_t used_reg_idx = 0;
+    FILE *fd_host = NULL;
+    size_t rd_count = 0;
 
     // Parse combo flash to find the base address and limit of different regions and program flash channel region protection registers
     // eSPI flash channel Protected Range Register defination
     // [15:0] - Regions Base
     // [31:16] - Region Limit
     fd_host = fopen(mtd_path, "rb");
-    if (fd_host == NULL)
-    {
+    if (fd_host == NULL) {
         lg2::emergency("unable to open HOST MTD device path, errno: {ERROR}", "ERROR", errno);
-        exit(EXIT_FAILURE);
+        return false;
     }
     memset(flash_descriptor_data,0x00,sizeof(flash_descriptor_data));
-    do
-    {
-        cur = fseek(fd_host, 0, SEEK_SET);
-        if (cur == -1)
+    do {
+        if (fseek(fd_host, 0, SEEK_SET))
         {
-            lg2::emergency("error during lseek operation from MTD partition : {MTD_PATH} and errno : {ERRNO}" , "MTD_PATH" , std::string(mtd_path) ,"ERRNO" , errno);
+            lg2::emergency("error during lseek operation from MTD partition : {MTD_PATH} and errno : {ERRNO}" , "MTD_PATH" , std::string(mtd_path), "ERRNO" , errno);
             fclose(fd_host);
-            exit(EXIT_FAILURE);
+            return false;
         }
         rd_count = fread(flash_descriptor_data, 1, sizeof(flash_descriptor_data), fd_host);
         if(rd_count <= 0)
         {
-            lg2::emergency("error during reading flash decriptor Data from MTD partition : {MTD_PATH} and errno : {ERRNO}" , "MTD_PATH" , std::string(mtd_path) ,"ERRNO" , errno);
+            lg2::emergency("error during reading flash descriptor data from MTD partition : {MTD_PATH} and errno : {ERRNO}" , "MTD_PATH" , std::string(mtd_path), "ERRNO" , errno);
             fclose(fd_host);
-            exit(EXIT_FAILURE);
+            return false;
         }
     } while(rd_count != sizeof(flash_descriptor_data));
     fclose(fd_host);
 
     // check for valid flash signature and if signature value is 0FF0_A55A, then flash descriptor is valid. if it's not valid then exit
-    desc_data = (flash_descriptor *)flash_descriptor_data;
-    if(desc_data->signature == 0x0FF0A55A)
-    {
-        lg2::info("Found Valid Flash Signature and flash descriptor is valid");
+    desc_data = reinterpret_cast<flash_descriptor *>(flash_descriptor_data);
+    if(desc_data->signature != FLASH_DESC_SIGNATURE) {
+        lg2::emergency("Invalid flash signature and flash descriptor is not valid, signature : {SIGNATURE}", "SIGNATURE", desc_data->signature);
+        return false;
     }
-    else
-    {
-        lg2::emergency("Invalid Flash Signature and flash descriptor is not valid, signature : {SIGNATURE}", "SIGNATURE", desc_data->signature);
-        exit(EXIT_FAILURE);
-    }
+
+    lg2::info("Found valid flash signature and flash descriptor is valid");
+
     // if region base is 0x7FFF and region limit is 0x0000, then the region is not used, otherwise region is used.
-    for(reg_idx = 0; reg_idx < MAX_DESC_REGIONS; reg_idx++)
-    {
+    for(uint8_t reg_idx = 0; reg_idx < MAX_DESC_REGIONS; reg_idx++) {
         reg_base = desc_data->flash_region_reg_arr[reg_idx].bits.region_base;
         reg_limit = desc_data->flash_region_reg_arr[reg_idx].bits.region_limit;
-        if((reg_base == 0x7FFF) && (reg_limit == 0x0000))
-        {
-            lg2::info("Flash descriptor Region {REGID} is not used", "REGID", reg_idx);
+        if((reg_base == 0x7FFF) && (reg_limit == 0x0000)) {
             continue;
         }
-        else
-        {
-            lg2::info("Flash descriptor Region {REGID} is used,region base: {REGBASE} and region limit :{REGLIMIT}" , "REGID" , reg_idx ,"REGBASE" , reg_base, "REGLIMIT", reg_limit);
-            prr_data = (reg_base & 0xFFFF) | (((reg_limit & 0xFFFF) + 1) << 16);
-            fp = fopen(prr_sysfs_address[used_reg_idx],"w");
-            if (fp == NULL){
-                lg2::emergency("unable to open ESPIFCPRR SYSFS path {SYSFS_PATH}", "SYSFS_PATH", std::string(prr_sysfs_address[used_reg_idx]));
-                exit(EXIT_FAILURE);
-            }
-            sprintf(str,"0x%08x",prr_data);
-            fputs(str,fp);
-            fclose(fp);
-            used_reg_idx++;
-            if (used_reg_idx >= MAX_PROTECTED_RANGE_REGS)
-            {
-                lg2::emergency("All protected Range registers are already being used and used reg index : {REGID}", "REGID", used_reg_idx);
-                exit(EXIT_FAILURE);
-            }
+
+        // get the base and limit and program flash channel region protection registers
+        // reg_base contains bits [26:12] for the region base and bits [11:0] are assumed to be 0x000
+        // reg_limit contains bits [26:12] of the ending address of this region and bits [11:0] are assumed to be 0xFFF
+        // in our ASIC, RTL is 0x00 based so bit [11:0] are assumed to be 0x00 so we have to increase the Limit by 1 and program in ASIC register
+        // for an example, if we are getting the limit as 0x00 then we have to program 0x01 in RL field of PRR register and so on
+        prr_data = (reg_base & 0xFFFF) | (((reg_limit & 0xFFFF) + 1) << 16);
+        if (!set_espifcprr_register(static_cast<int8_t>(used_reg_idx), prr_data)) {
+            return false;
+        }
+
+        used_reg_idx++;
+        // According to SPI programming guide, MAX number of descriptor regions can be 16 but all of them are not used
+        // our ASIC has 8 protected range registers. if all of them are already used, then log error message and return from here
+        if (used_reg_idx >= MAX_PROTECTED_RANGE_REGS) {
+            lg2::emergency("All protected range registers are already being used and used reg index : {REGID}", "REGID", used_reg_idx);
+            return false;
         }
     }
-    if (used_reg_idx == 0x00)
-    {
-        lg2::emergency("none of the regions are used");
+
+    if (used_reg_idx == 0x00) {
+            lg2::emergency("none of the flash descriptor regions are used");
+        return false;
+    }
+
+    //Set the ESPIFCRAP0 register
+    rap_data = ((static_cast<uint32_t>(pow(2, used_reg_idx) - 1) << 16) | 0x000f);
+    if (!set_espifcrap0_register(rap_data)) {
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * configure_safs_for_amd().
+ *
+ * AMD flow is policy-driven:
+ *   - Validate AMD signature at fixed SPI offset.
+ *   - Program PRR0 for region-0-only access.
+ *   - Program RAP0 read policy for region 0 with tags 0..3.
+ *
+ * This differs from Intel's descriptor-parsing model.
+ */
+bool configure_safs_for_amd()
+{
+    FILE *file = NULL;
+    char buf[AMD_SIGNATURE_LEN] = {0};
+    const char *mtd_path = MTD_BY_NAME_HOST_PRIME_PATH;
+    uint32_t prr_data = 0;
+    uint32_t rap_data = 0;
+
+    file = fopen(mtd_path,"rb");
+    if (file == NULL){
+        lg2::emergency("Unable to open HOST MTD device path, errno: {ERRNO}", "ERRNO", errno);
+        return false;
+    }
+
+    if (fseek(file, AMD_SIGNATURE_OFFSET, SEEK_SET) != 0) {
+        lg2::emergency("Error during fseek operation from MTD partition");
+        fclose(file);
+        return false;
+    }
+    //read signature
+    if (fread(buf, 1, AMD_SIGNATURE_LEN, file) != AMD_SIGNATURE_LEN) {
+        lg2::emergency("Error during reading amd signature from MTD partition");
+        fclose(file);
+        return false;
+    }
+
+    fclose(file);
+
+    //Validate signature
+    if (memcmp(buf, AMD_SIGNATURE, AMD_SIGNATURE_LEN) != 0) {
+        lg2::emergency("Invalid AMD signature in host flash");
+        return false;
+    }
+
+    //Allow only Region0
+    prr_data = ((0xFFFF << 16) | 0x0000);
+    if (!set_espifcprr_register(0, prr_data)) {
+        return false;
+    }
+
+    //Allow read access only for  Region0 [bit 16] & Tags 0..3
+    rap_data = ((0x0001 << 16) | 0x000F);
+    if (!set_espifcrap0_register(rap_data)) {
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * OpenBMC adaptation of architecture detection.
+ *
+ * Determines Intel/AMD via platform capability APIs. In this service, the
+ * board type is provided through environment variable BOARD. DL345 (AMD) maps
+ * to 0x0285 (and 0x285 for compatibility).
+ */
+bool is_amd_board()
+{
+    const char *board = getenv("BOARD");
+    if (board == NULL) {
+        lg2::warning("BOARD environment variable is not set, defaulting to Intel flow");
+        return false;
+    }
+
+    return (strcmp(board, "0x0285") == 0 || strcmp(board,"0x285") == 0);
+}
+
+int main()
+{
+    bool rc;
+
+    // baseline sequence sync host SPI to VROM and enable VROM.
+    rc = enable_and_copy_vrom_content();
+    if (!rc) {
+        lg2::emergency("Error while enabling and copying VROM contents and rc: {ERROR}" , "ERROR" , rc);
+        exit(EXIT_FAILURE);
+    }
+    lg2::info("VROM is enabled");
+
+    // Initialize PRR/RAP to deny-all before applying platform-specific policy.
+    if (!set_espifcprr_register(ALL_REGS, 0x0000FFFF)) {
         exit(EXIT_FAILURE);
     }
 
-    // program e-SPI Flash channel range access protection registers
-    fp = fopen(FLASH_ESPIFCRAP_REG_0_SYSFS_PATH,"w");
-    if (fp == NULL){
-        lg2::emergency("unable to open ESPIFCRAP reg 0 SYSFS path {SYSFS_PATH}" , "SYSFS_PATH" , std::string(FLASH_ESPIFCRAP_REG_0_SYSFS_PATH));
+    if (!set_espifcrap0_register(0)) {
         exit(EXIT_FAILURE);
     }
-    rap_data = (((int)(pow(2,used_reg_idx) - 1) << 16) | 0x000f);
-    sprintf(str,"0x%08x",rap_data);
-    fputs(str,fp);
-    fclose(fp);
 
-    //enable flash channel access
+    // Apply the ported architecture-specific SAFS policy.
+    if (is_amd_board()) {
+        lg2::info("Applying AMD SAFS configuration for BOARD 0x0285");
+        if (!configure_safs_for_amd()) {
+            exit(EXIT_FAILURE);
+        }
+    }
+    else {
+        lg2::info("Applying Intel SAFS configuration");
+        if (!configure_safs_for_intel()) {
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Final enablement sequence for flash/boot visibility.
     update_sysfs_reg32(FLASH_ESPIGCFG_SYSFS_PATH, (1 << FCCFGVALID), false);
-
-    // enable host boot
     update_sysfs_reg32(HOSTBOOT_EN_PATH, 1, true);
-
-    // set subsystem and vendor id
     update_sysfs_reg32(PCI_VENDOR_ID_PATH, 0x03d91590, true);
 
     return 0;

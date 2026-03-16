@@ -27,7 +27,7 @@
 #define FLASH_ESPIGCFG_SYSFS_PATH                "/sys/class/soc/kw_reg_list/espigcfg"
 
 #define MTD_BY_NAME_HOST_PRIME_PATH              "/dev/mtd/by-name/host-prime"
-#define MTD_BY_NAME_VROM_PRIME_PATH              "/dev/mtd/by-name/vrom-prime";
+#define MTD_BY_NAME_VROM_PRIME_PATH              "/dev/mtd/by-name/vrom-prime"
 
 #define HOSTCMD_PATH                             "/sys/class/soc/kw_reg_list/hostcmd"
 #define HOSTBOOT_EN_PATH                         "/sys/class/soc/fn2/fn2_host_boot_en"
@@ -38,6 +38,13 @@
 #define MAX_PROTECTED_RANGE_REGS                 8
 #define FCCFGVALID                               16
 #define BUF_SIZE_512B                            512
+#define ALL_REGS                                 -1
+
+#define FLASH_DESC_SIGNATURE                     0x0FF0A55A
+
+#define AMD_SIGNATURE_OFFSET                     0x03000000
+#define AMD_SIGNATURE                            "COMPAQ"
+#define AMD_SIGNATURE_LEN                        6
 
 // structure describing Flash descriptor content
 #pragma pack(1)
