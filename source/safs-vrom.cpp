@@ -458,8 +458,8 @@ bool configure_safs_for_amd()
  * OpenBMC adaptation of architecture detection.
  *
  * Determines Intel/AMD via platform capability APIs. In this service, the
- * board type is provided through environment variable BOARD. DL345 (AMD) maps
- * to 0x0285 (and 0x285 for compatibility).
+ * board type is provided through environment variable BOARD. DL325 and DL45 (AMD)
+ * Product IDs 0x0284 and 0x285 repectively.
  */
 bool is_amd_board()
 {
@@ -469,7 +469,7 @@ bool is_amd_board()
         return false;
     }
 
-    return (strcmp(board, "0x0285") == 0 || strcmp(board,"0x285") == 0);
+    return (strcmp(board, "0x0284") == 0 || strcmp(board,"0x0285") == 0);
 }
 
 int main()
@@ -495,8 +495,9 @@ int main()
 
     // Apply the ported architecture-specific SAFS policy.
     if (is_amd_board()) {
-        lg2::info("Applying AMD SAFS configuration for BOARD 0x0285");
+        lg2::info("Applying AMD SAFS configuration for BOARD 0x028x");
         if (!configure_safs_for_amd()) {
+            lg2::info("Applying AMD SAFS configuration failed!");
             exit(EXIT_FAILURE);
         }
     }
